@@ -1,0 +1,1523 @@
+#  Java SDK developer's guide - Features
+
+The Features section of the Temporal Developer's guide provides basic
+implementation guidance on how to use many of the development features
+available to Workflows and Activities in the Temporal Platform.
+
+In this section you can find the following:
+
+  * How to develop Signals 
+  * How to develop Queries 
+  * How to start a Child Workflow Execution 
+  * How to start a Temporal Cron Job 
+  * How to use Continue-As-New 
+  * How to set Workflow timeouts & retries 
+  * How to set Activity timeouts & retries 
+  * How to Heartbeat an Activity 
+  * How to Asynchronously complete an Activity 
+  * How to register Namespaces 
+  * How to use custom payload conversion 
+
+##  How to develop with Signals  ​
+
+A [ Signal ](/workflows#signal) is a message sent to a running Workflow
+Execution.
+
+Signals are defined in your code and handled in your Workflow Definition.
+Signals can be sent to Workflow Executions from a Temporal Client or from
+another Workflow Execution.
+
+###  How to define a Signal  ​
+
+A Signal has a name and can have arguments.
+
+  * The name, also called a Signal type, is a string. 
+  * The arguments must be [ serializable ](/dataconversion) . 
+
+The ` @SignalMethod ` annotation indicates that the method is used to handle
+and react to external Signals.
+
+    
+    
+    @SignalMethod  
+       void mySignal(String signalName);  
+    
+
+The method can have parameters that contain the Signal payload and must be
+serializable by the default Jackson JSON Payload Converter.
+
+    
+    
+    void mySignal(String signalName, Object... args);  
+    
+
+This method does not return a value and must have a ` void ` return type.
+
+Things to consider when defining Signals:
+
+  * Use Workflow object constructors and initialization blocks to initialize the internal data structures if possible. 
+  * Signals might be received by a Workflow before the Workflow method is executed. When implementing Signals in scenarios where this can occur, assume that no parts of Workflow code ran. In some cases, Signal method implementation might require some initialization to be performed by the Workflow method code first—for example, when the Signal processing depends on, and is defined by the Workflow input. In this case, you can use a flag to determine whether the Workflow method is already triggered; if not, persist the Signal data into a collection for delayed processing by the Workflow method. 
+
+###  How to handle Signals in an Workflow in Java  ​
+
+Workflows listen for Signals by the Signal's name.
+
+Use the ` @SignalMethod ` annotation to handle Signals in the Workflow
+interface.
+
+The Signal type defaults to the name of the method. In the following example,
+the Signal type defaults to ` retryNow ` .
+
+    
+    
+    @WorkflowInterface  
+    public interface FileProcessingWorkflow {  
+      
+       @WorkflowMethod  
+       String processFile(Arguments args);  
+      
+       @SignalMethod  
+       void retryNow();  
+    }  
+    
+
+To overwrite this default naming and assign a custom Signal type, use the `
+@SignalMethod ` annotation with the ` name ` parameter. In the following
+example, the Signal type is set to ` retrysignal ` .
+
+    
+    
+    @WorkflowInterface  
+    public interface FileProcessingWorkflow {  
+      
+       @WorkflowMethod  
+       String processFile(Arguments args);  
+      
+       @SignalMethod(name = "retrysignal")  
+       void retryNow();  
+    }  
+    
+
+A Workflow interface can define any number of methods annotated with `
+@SignalMethod ` , but the method names or the ` name ` parameters for each
+must be unique.
+
+In the following example, we define a Signal method ` updateGreeting ` to
+update the greeting in the Workflow. We set a ` Workflow.await ` in the
+Workflow implementation to block the current Workflow Execution until the
+provided unblock condition is evaluated to ` true ` . In this case, the
+unblocking condition is evaluated to ` true ` when the Signal to update the
+greeting is received.
+
+    
+    
+    @WorkflowInterface  
+    public interface HelloWorld {  
+        @WorkflowMethod  
+        void sayHello(String name);  
+      
+        @SignalMethod  
+        void updateGreeting(String greeting);  
+    }  
+    
+    
+    
+    public class HelloWorldImpl implements HelloWorld {  
+        private final Logger workflowLogger = Workflow.getLogger(HelloWorldImpl.class);  
+        private String greeting;  
+      
+        @Override  
+        public void sayHello(String name) {  
+            int count = 0;  
+            while (!"Bye".equals(greeting)) {  
+                String oldGreeting = greeting;  
+                Workflow.await(() -> !Objects.equals(greeting, oldGreeting));  
+            }  
+            workflowLogger.info(++count + ": " + greeting + " " + name + "!");  
+        }  
+      
+        @Override  
+        public void updateGreeting(String greeting) {  
+            this.greeting = greeting;  
+        }  
+    }  
+    
+
+This Workflow completes when the Signal updates the greeting to ` Bye ` .
+
+**Dynamic Signal Handler** You can also implement Signal handlers dynamically.
+This is useful for library-level code and implementation of DSLs.
+
+Use ` Workflow.registerListener(Object) ` to register an implementation of the
+` DynamicSignalListener ` in the Workflow implementation code.
+
+    
+    
+    Workflow.registerListener(  
+      (DynamicSignalHandler)  
+          (signalName, encodedArgs) -> name = encodedArgs.get(0, String.class));  
+    
+
+When registered, any Signals sent to the Workflow without a defined handler
+will be delivered to the ` DynamicSignalHandler ` . Note that you can only
+register one ` Workflow.registerListener(Object) ` per Workflow Execution. `
+DynamicSignalHandler ` can be implemented in both regular and dynamic Workflow
+implementations.
+
+###  How to send a Signal from a Temporal Client  ​
+
+When a Signal is sent successfully from the Temporal Client, the [
+WorkflowExecutionSignaled ](/references/events#workflowexecutionsignaled)
+Event appears in the Event History of the Workflow that receives the Signal.
+
+To send a Signal to a Workflow Execution from a Client, call the Signal
+method, annotated with ` @SignalMethod ` in the Workflow interface, from the
+Client code.
+
+In the following Client code example, we start the Workflow ` greetCustomer `
+and call the Signal method ` addCustomer ` that is handled in the Workflow.
+
+    
+    
+    // create a typed Workflow stub for GreetingsWorkflow  
+    GreetingsWorkflow workflow = client.newWorkflowStub(GreetingsWorkflow.class,  
+            WorkflowOptions.newBuilder()  
+                    // set the Task Queue  
+                    .setTaskQueue(taskQueue)  
+                    // Workflow Id is recommended but not required  
+                    .setWorkflowId(workflowId)  
+                    .build());  
+      
+    // start the Workflow  
+    WorkflowClient.start(workflow::greetCustomer);  
+    // send a Signal to the Workflow  
+    Customer customer = new Customer("John", "Spanish", "john@john.com");  
+    workflow.addCustomer(customer); //addCustomer is the Signal method defined in the greetCustomer Workflow.  
+    
+
+See  Handle Signals  for details on how to handle Signals in a Workflow.
+
+###  How to send a Signal from a Workflow  ​
+
+A Workflow can send a Signal to another Workflow, in which case it's called an
+_External Signal_ .
+
+When an External Signal is sent:
+
+  * A [ SignalExternalWorkflowExecutionInitiated ](/references/events#signalexternalworkflowexecutioninitiated) Event appears in the sender's Event History. 
+  * A [ WorkflowExecutionSignaled ](/references/events#workflowexecutionsignaled) Event appears in the recipient's Event History. 
+
+To send a Signal from within a Workflow to a different Workflow Execution,
+initiate an ` ExternalWorkflowStub ` in the implementation of the current
+Workflow and call the Signal method defined in the other Workflow.
+
+The following example shows how to use an untyped ` ExternalWorkflowStub ` in
+the Workflow implementation to send a Signal to another Workflow.
+
+    
+    
+        public String sendGreeting(String name) {  
+      
+            // initiate ExternalWorkflowStub to call another Workflow by its Id "ReplyWF"  
+            ExternalWorkflowStub callRespondWorkflow = Workflow.newUntypedExternalWorkflowStub("ReplyWF");  
+      
+            String responseTrigger = activity.greeting("Hello", name);  
+      
+            // send a Signal from this sendGreeting Workflow to the other Workflow  
+            // by calling the Signal method name "getGreetCall" defined in that Workflow.  
+            callRespondWorkflow.signal("getGreetCall", responseTrigger);  
+      
+            return responseTrigger;  
+    
+
+###  How to send a Signal-with-Start in Java  ​
+
+Signal-With-Start is used from the Client. It takes a Workflow Id, Workflow
+arguments, a Signal name, and Signal arguments.
+
+If there's a Workflow running with the given Workflow Id, it will be signaled.
+If there isn't, a new Workflow will be started and immediately signaled.
+
+To send Signals to a Workflow Execution whose status is unknown, use `
+SignalWithStart ` with a ` WorkflowStub ` in the Client code. This method
+ensures that if the Workflow Execution is in a closed state, a new Workflow
+Execution is spawned and the Signal is delivered to the running Workflow
+Execution.
+
+Note that when the ` SignalwithStart ` spawns a new Workflow Execution, the
+Signal is delivered before the call to your ` @WorkflowMethod ` . This means
+that the Signal handler in your Workflow interface code will execute before
+the ` @WorkfowMethod ` . You must ensure that your code logic can deal with
+this.
+
+In the following example, the Client code uses ` SignalwithStart ` to send the
+Signal ` setCustomer ` to the ` UntypedWorkflowStub ` named ` GreetingWorkflow
+` . If the ` GreetingWorkflow ` Workflow Execution is not running, the `
+SignalwithStart ` starts the Workflow Execution.
+
+    
+    
+    ...  
+    public static void signalWithStart() {  
+            // WorkflowStub is a client-side stub to a single Workflow instance  
+            WorkflowStub untypedWorkflowStub = client.newUntypedWorkflowStub("GreetingWorkflow",  
+            WorkflowOptions.newBuilder()  
+                    .setWorkflowId(workflowId)  
+                    .setTaskQueue(taskQueue)  
+                    .build());  
+      
+            untypedWorkflowStub.signalWithStart("setCustomer", new Object[] {customer2}, new Object[] {customer1});  
+      
+            printWorkflowStatus();  
+      
+            try {  
+                String greeting = untypedWorkflowStub.getResult(String.class);  
+                printWorkflowStatus();  
+                System.out.println("Greeting: " + greeting);  
+            } catch(WorkflowFailedException e) {  
+                System.out.println("Workflow failed: " + e.getCause().getMessage());  
+                printWorkflowStatus();  
+            }  
+        }  
+    ...  
+    
+
+The following example shows the Workflow interface for the ` GreetingWorkflow
+` called in the previous example.
+
+    
+    
+    ...  
+    @WorkflowInterface  
+    public interface GreetingWorkflow {  
+        @WorkflowMethod  
+        String greet(Customer customer);  
+      
+        @SignalMethod  
+        void setCustomer(Customer customer);  
+      
+        @QueryMethod  
+        Customer getCustomer();  
+    ...  
+    }  
+    
+
+Note that the Signal handler ` setCustomer ` is executed before the `
+@WorkflowMethod ` ` greet ` is called.
+
+##  How to develop with Queries  ​
+
+A [ Query ](/workflows#query) is a synchronous operation that is used to get
+the state of a Workflow Execution.
+
+###  How to define a Query  ​
+
+A Query has a name and can have arguments.
+
+  * The name, also called a Query type, is a string. 
+  * The arguments must be [ serializable ](/dataconversion) . 
+
+To define a Query, define the method name and the result type of the Query.
+
+    
+    
+    query(String queryType, Class<R> resultClass, Type resultType, Object... args);  
+      
+      /* @param queryType name of the Query handler. Usually it is a method name.  
+       * @param resultClass class of the Query result type  
+       * @param args optional Query arguments  
+       * @param <R> type of the Query result  
+      */  
+    
+
+Query methods can take in any number of input parameters which can be used to
+limit the data that is returned.
+
+Use the Query method names to send and receive Queries.
+
+Query methods must never change any Workflow state including starting
+Activities or blocking threads in any way.
+
+###  How to handle a Query  ​
+
+Queries are handled by your Workflow.
+
+Don’t include any logic that causes [ Command ](/workflows#command) generation
+within a Query handler (such as executing Activities). Including such logic
+causes unexpected behavior.
+
+To handle a Query in the Workflow, create a Query handler using the `
+@QueryMethod ` annotation in the Workflow interface and define it in the
+Workflow implementation.
+
+The ` @QueryMethod ` annotation indicates that the method is used to handle a
+Query that is sent to the Workflow Execution. The method can have parameters
+that can be used to filter data that the Query returns. Because the method
+returns a value, it must have a return type that is not ` void ` .
+
+The Query name defaults to the name of the method. In the following example,
+the Query name defaults to ` getStatus ` .
+
+    
+    
+    @WorkflowInterface  
+    public interface FileProcessingWorkflow {  
+       @QueryMethod  
+       String getStatus();  
+    }  
+    
+
+To overwrite this default naming and assign a custom Query name, use the `
+@QueryMethod ` annotation with the ` name ` parameter. In the following
+example, the Query name is set to "history".
+
+    
+    
+    @WorkflowInterface  
+    public interface FileProcessingWorkflow {  
+       @QueryMethod(name = "history")  
+       String getStatus();  
+    }  
+    
+
+A Workflow Definition interface can define multiple methods annotated with `
+@QueryMethod ` , but the method names or the ` name ` parameters for each must
+be unique.
+
+The following Workflow interface has a Query method ` getCount() ` to handle
+Queries to this Workflow.
+
+    
+    
+      @WorkflowInterface  
+      public interface HelloWorld {  
+        @WorkflowMethod  
+        void sayHello(String name);  
+      
+        @QueryMethod  
+        int getCount();  
+      }  
+    
+
+The following example is the Workflow implementation with the Query method
+defined in the ` HelloWorld ` Workflow interface from the previous example.
+
+    
+    
+      public static class HelloWorldImpl implements HelloWorld {  
+      
+        private String greeting = "Hello";  
+        private int count = 0;  
+      
+        @Override  
+        public void sayHello(String name) {  
+          while (!"Bye".equals(greeting)) {  
+            logger.info(++count + ": " + greeting + " " + name + "!");  
+            String oldGreeting = greeting;  
+            Workflow.await(() -> !Objects.equals(greeting, oldGreeting));  
+          }  
+          logger.info(++count + ": " + greeting + " " + name + "!");  
+        }  
+      
+        @Override  
+        public int getCount() {  
+          return count;  
+        }  
+      }  
+    
+
+**Dynamic Query Handler** You can also implement Query handlers dynamically.
+This is useful for library-level code and implementation of DSLs.
+
+Use ` Workflow.registerListener(Object) ` to register an implementation of the
+` DynamicQueryListener ` in the Workflow implementation code.
+
+    
+    
+    Workflow.registerListener(  
+      (DynamicQueryHandler)  
+          (queryName, encodedArgs) -> name = encodedArgs.get(0, String.class));  
+    
+
+When registered, any Queries sent to the Workflow without a defined handler
+will be delivered to the ` DynamicQueryHandler ` . Note that you can only
+register one ` Workflow.registerListener(Object) ` per Workflow Execution. `
+DynamicQueryHandler ` can be implemented in both regular and dynamic Workflow
+implementations.
+
+###  How to send a Query  ​
+
+Queries are sent from a Temporal Client.
+
+To send a Query to a Workflow Execution from an external process, call the
+Query method (defined in the Workflow) from a ` WorkflowStub ` within the
+Client code.
+
+For example, the following Client code calls a Query method ` queryGreeting()
+` defined in the ` GreetingWorkflow ` Workflow interface.
+
+    
+    
+     // Create our workflow options  
+        WorkflowOptions workflowOptions =  
+            WorkflowOptions.newBuilder()  
+            .setWorkflowId(WORKFLOW_ID)  
+            .setTaskQueue(TASK_QUEUE).build();  
+      
+        // Create the Temporal client stub. It is used to start our workflow execution.  
+        GreetingWorkflow workflow = client.newWorkflowStub(GreetingWorkflow.class, workflowOptions);  
+      
+        // Start our workflow asynchronously to not use another thread to query.  
+        WorkflowClient.start(workflow::createGreeting, "World");  
+      
+        // Query the Workflow to get the current value of greeting and print it.  
+        System.out.println(workflow.queryGreeting());  
+    
+
+##  Workflow timeouts  ​
+
+Each Workflow timeout controls the maximum duration of a different aspect of a
+Workflow Execution.
+
+Workflow timeouts are set when  starting the Workflow Execution  .
+
+  * **[ Workflow Execution Timeout ](/workflows#workflow-execution-timeout) ** \- restricts the maximum amount of time that a single Workflow Execution can be executed. 
+  * **[ Workflow Run Timeout ](/workflows#workflow-run-timeout) ** : restricts the maximum amount of time that a single Workflow Run can last. 
+  * **[ Workflow Task Timeout ](/workflows#workflow-task-timeout) ** : restricts the maximum amount of time that a Worker can execute a Workflow Task. 
+
+Create an instance of [ ` WorkflowStub `
+](https://www.javadoc.io/doc/io.temporal/temporal-
+sdk/latest/io/temporal/client/WorkflowStub.html) in the Client code and set
+your timeout.
+
+Available timeouts are:
+
+  * [ setWorkflowExecutionTimeout() ](https://www.javadoc.io/doc/io.temporal/temporal-sdk/latest/io/temporal/client/WorkflowOptions.Builder.html#setWorkflowExecutionTimeout\(java.time.Duration\))
+  * [ setWorkflowRunTimeout() ](https://www.javadoc.io/doc/io.temporal/temporal-sdk/latest/io/temporal/client/WorkflowOptions.Builder.html#setWorkflowRunTimeout\(java.time.Duration\))
+  * [ setWorkflowTaskTimeout() ](https://www.javadoc.io/doc/io.temporal/temporal-sdk/latest/io/temporal/client/WorkflowOptions.Builder.html#setWorkflowTaskTimeout\(java.time.Duration\))
+
+    
+    
+    //create Workflow stub for YourWorkflowInterface  
+    YourWorkflowInterface workflow1 =  
+        WorkerGreet.greetclient.newWorkflowStub(  
+            GreetWorkflowInterface.class,  
+            WorkflowOptions.newBuilder()  
+                    .setWorkflowId("YourWorkflow")  
+                    .setTaskQueue(WorkerGreet.TASK_QUEUE)  
+                    // Set Workflow Timeout duration  
+                    .setWorkflowExecutionTimeout(Duration.ofSeconds(10))  
+                    // .setWorkflowRunTimeout(Duration.ofSeconds(10))  
+                    // .setWorkflowTaskTimeout(Duration.ofSeconds(10))  
+                    .build());  
+    
+
+###  Workflow retries  ​
+
+A Retry Policy can work in cooperation with the timeouts to provide fine
+controls to optimize the execution experience.
+
+Use a [ Retry Policy ](/retry-policies) to retry a Workflow Execution in the
+event of a failure.
+
+Workflow Executions do not retry by default, and Retry Policies should be used
+with Workflow Executions only in certain situations.
+
+To set a Workflow Retry Options in the [ ` WorkflowStub `
+](https://www.javadoc.io/doc/io.temporal/temporal-
+sdk/latest/io/temporal/client/WorkflowStub.html) instance use [ `
+WorkflowOptions.Builder.setWorkflowRetryOptions `
+](https://www.javadoc.io/doc/io.temporal/temporal-
+sdk/latest/io/temporal/client/WorkflowOptions.Builder.html) .
+
+  * Type: ` RetryOptions `
+  * Default: ` Null ` which means no retries will be attempted. 
+
+    
+    
+    //create Workflow stub for GreetWorkflowInterface  
+    GreetWorkflowInterface workflow1 =  
+        WorkerGreet.greetclient.newWorkflowStub(  
+            GreetWorkflowInterface.class,  
+            WorkflowOptions.newBuilder()  
+                    .setWorkflowId("GreetWF")  
+                    .setTaskQueue(WorkerGreet.TASK_QUEUE)  
+                    // Set Workflow Retry Options  
+                    .setRetryOptions(RetryOptions.newBuilder()  
+                    .build());  
+    
+
+##  How to set Activity timeouts  ​
+
+Each Activity timeout controls the maximum duration of a different aspect of
+an Activity Execution.
+
+The following timeouts are available in the Activity Options.
+
+  * **[ Schedule-To-Close Timeout ](/activities#schedule-to-close-timeout) ** : is the maximum amount of time allowed for the overall [ Activity Execution ](/activities#activity-execution) . 
+  * **[ Start-To-Close Timeout ](/activities#start-to-close-timeout) ** : is the maximum time allowed for a single [ Activity Task Execution ](/workers#activity-task-execution) . 
+  * **[ Schedule-To-Start Timeout ](/activities#schedule-to-start-timeout) ** : is the maximum amount of time that is allowed from when an [ Activity Task ](/workers#activity-task) is scheduled to when a [ Worker ](/workers#worker) starts that Activity Task. 
+
+An Activity Execution must have either the Start-To-Close or the Schedule-To-
+Close Timeout set.
+
+Set your Activity Timeout from the [ ` ActivityOptions.Builder `
+](https://www.javadoc.io/doc/io.temporal/temporal-
+sdk/latest/io/temporal/activity/ActivityOptions.Builder.html) class.
+
+Available timeouts are:
+
+  * ScheduleToCloseTimeout() 
+  * ScheduleToStartTimeout() 
+  * StartToCloseTimeout() 
+
+You can set Activity Options using an ` ActivityStub ` within a Workflow
+implementation, or per-Activity using ` WorkflowImplementationOptions ` within
+a Worker.
+
+The following uses ` ActivityStub ` .
+
+    
+    
+    GreetingActivities activities = Workflow.newActivityStub(GreetingActivities.class,  
+                    ActivityOptions.newBuilder()  
+                            .setScheduleToCloseTimeout(Duration.ofSeconds(5))  
+                            // .setStartToCloseTimeout(Duration.ofSeconds(2)  
+                            // .setScheduletoCloseTimeout(Duration.ofSeconds(20))  
+                            .build());  
+    
+
+The following uses ` WorkflowImplementationOptions ` .
+
+    
+    
+    WorkflowImplementationOptions options =  
+                WorkflowImplementationOptions.newBuilder()  
+                        .setActivityOptions(  
+                                ImmutableMap.of(  
+                                        "GetCustomerGreeting",  
+                                        // Set Activity Execution timeout  
+                                        ActivityOptions.newBuilder()  
+                                            .setScheduleToCloseTimeout(Duration.ofSeconds(5))  
+                                            // .setStartToCloseTimeout(Duration.ofSeconds(2))  
+                                            // .setScheduleToStartTimeout(Duration.ofSeconds(5))  
+                                            .build()))  
+                        .build();  
+    
+
+note
+
+If you define options per-Activity Type options with `
+WorkflowImplementationOptions.setActivityOptions() ` , setting them again
+specifically with ` ActivityStub ` in a Workflow will override this setting.
+
+###  How to set an Activity Retry Policy  ​
+
+A Retry Policy works in cooperation with the timeouts to provide fine controls
+to optimize the execution experience.
+
+Activity Executions are automatically associated with a default [ Retry Policy
+](/retry-policies) if a custom one is not provided.
+
+To set a Retry Policy, known as the [ Retry Options ](/retry-policies) in
+Java, use [ ` ActivityOptions.newBuilder.setRetryOptions() `
+](https://www.javadoc.io/doc/io.temporal/temporal-
+sdk/latest/io/temporal/activity/ActivityOptions.Builder.html) .
+
+  * Type: ` RetryOptions `
+
+  * Default: Server-defined Activity Retry policy. 
+
+  * With ` ActivityStub `
+    
+        private final ActivityOptions options =  
+        ActivityOptions.newBuilder()  
+            // note that either StartToCloseTimeout or ScheduleToCloseTimeout are  
+            // required when setting Activity options.  
+            .setStartToCloseTimeout(Duration.ofSeconds(5))  
+            .setRetryOptions(  
+                RetryOptions.newBuilder()  
+                    .setInitialInterval(Duration.ofSeconds(1))  
+                    .setMaximumInterval(Duration.ofSeconds(10))  
+                    .build())  
+            .build();  
+    
+
+  * With ` WorkflowImplementationOptions `
+    
+        WorkflowImplementationOptions options =  
+            WorkflowImplementationOptions.newBuilder()  
+                   .setActivityOptions(  
+                        ImmutableMap.of(  
+                            "EmailCustomerGreeting",  
+                            ActivityOptions.newBuilder()  
+                                  // note that either StartToCloseTimeout or ScheduleToCloseTimeout are  
+                                  // required when setting Activity options.  
+                                  .setStartToCloseTimeout(Duration.ofSeconds(5))  
+                                  .setRetryOptions(  
+                                        RetryOptions.newBuilder()  
+                                            .setDoNotRetry(NullPointerException.class.getName())  
+                                            .build())  
+                                  .build()))  
+                  .build();  
+    
+
+##  How to Heartbeat an Activity  ​
+
+An [ Activity Heartbeat ](/activities#activity-heartbeat) is a ping from the [
+Worker Process ](/workers#worker-process) that is executing the Activity to
+the [ Temporal Cluster ](/clusters) . Each Heartbeat informs the Temporal
+Cluster that the [ Activity Execution ](/activities#activity-execution) is
+making progress and the Worker has not crashed. If the Cluster does not
+receive a Heartbeat within a [ Heartbeat Timeout ](/activities#heartbeat-
+timeout) time period, the Activity will be considered failed and another [
+Activity Task Execution ](/workers#activity-task-execution) may be scheduled
+according to the Retry Policy.
+
+Heartbeats may not always be sent to the Cluster—they may be [ throttled
+](/activities#throttling) by the Worker.
+
+Activity Cancellations are delivered to Activities from the Cluster when they
+Heartbeat. Activities that don't Heartbeat can't receive a Cancellation.
+Heartbeat throttling may lead to Cancellation getting delivered later than
+expected.
+
+Heartbeats can contain a ` details ` field describing the Activity's current
+progress. If an Activity gets retried, the Activity can access the ` details `
+from the last Heartbeat that was sent to the Cluster.
+
+To Heartbeat an Activity Execution in Java, use the `
+Activity.getExecutionContext().heartbeat() ` Class method.
+
+    
+    
+    public class YourActivityDefinitionImpl implements YourActivityDefinition {  
+      
+      @Override  
+      public String yourActivityMethod(YourActivityMethodParam param) {  
+        // ...  
+        Activity.getExecutionContext().heartbeat(details);  
+        // ...  
+      }  
+      // ...  
+    }  
+    
+
+The method takes an optional argument, the ` details ` variable above that
+represents latest progress of the Activity Execution. This method can take a
+variety of types such as an exception object, custom object, or string.
+
+If the Activity Execution times out, the last Heartbeat ` details ` are
+included in the thrown ` ActivityTimeoutException ` , which can be caught by
+the calling Workflow. The Workflow can then use the ` details ` information to
+pass to the next Activity invocation if needed.
+
+In the case of Activity retries, the last Heartbeat's ` details ` are
+available and can be extracted from the last failed attempt by using `
+Activity.getExecutionContext().getHeartbeatDetails(Class<V> detailsClass) `
+
+####  How to set a Heartbeat Timeout  ​
+
+A [ Heartbeat Timeout ](/activities#heartbeat-timeout) works in conjunction
+with [ Activity Heartbeats ](/activities#activity-heartbeat) .
+
+To set a [ Heartbeat Timeout ](/activities#heartbeat-timeout) , use [ `
+ActivityOptions.newBuilder.setHeartbeatTimeout `
+](https://www.javadoc.io/doc/io.temporal/temporal-
+sdk/latest/io/temporal/activity/ActivityOptions.Builder.html) .
+
+  * Type: ` Duration `
+  * Default: None 
+
+You can set Activity Options using an ` ActivityStub ` within a Workflow
+implementation, or per-Activity using ` WorkflowImplementationOptions ` within
+a Worker. Note that if you define options per-Activity Type options with `
+WorkflowImplementationOptions.setActivityOptions() ` , setting them again
+specifically with ` ActivityStub ` in a Workflow will override this setting.
+
+  * With ` ActivityStub `
+    
+        private final GreetingActivities activities =  
+        Workflow.newActivityStub(  
+            GreetingActivities.class,  
+            ActivityOptions.newBuilder()  
+                // note that either StartToCloseTimeout or ScheduleToCloseTimeout are  
+                // required when setting Activity options.  
+                .setStartToCloseTimeout(Duration.ofSeconds(5))  
+                .setHeartbeatTimeout(Duration.ofSeconds(2))  
+                .build());  
+    
+
+  * With ` WorkflowImplementationOptions `
+    
+        WorkflowImplementationOptions options =  
+                WorkflowImplementationOptions.newBuilder()  
+                        .setActivityOptions(  
+                                ImmutableMap.of(  
+                                  "EmailCustomerGreeting",  
+                                        ActivityOptions.newBuilder()  
+                                            // note that either StartToCloseTimeout or ScheduleToCloseTimeout are  
+                                            // required when setting Activity options.  
+                                              .setStartToCloseTimeout(Duration.ofSeconds(5))  
+                                              .setHeartbeatTimeout(Duration.ofSeconds(2))  
+                                              .build()))  
+                        .build();  
+    
+
+##  How to asynchronously complete an Activity  ​
+
+[ Asynchronous Activity Completion ](/activities#asynchronous-activity-
+completion) enables the Activity Function to return without the Activity
+Execution completing.
+
+There are three steps to follow:
+
+  1. The Activity provides the external system with identifying information needed to complete the Activity Execution. Identifying information can be a [ Task Token ](/activities#task-token) , or a combination of Namespace, Workflow Id, and Activity Id. 
+  2. The Activity Function completes in a way that identifies it as waiting to be completed by an external system. 
+  3. The Temporal Client is used to Heartbeat and complete the Activity. 
+
+To complete an Activity asynchronously, set the [ ` ActivityCompletionClient `
+](https://www.javadoc.io/doc/io.temporal/temporal-
+sdk/latest/io/temporal/client/ActivityCompletionClient.html) interface to the
+` complete() ` method.
+
+    
+    
+        @Override  
+        public String composeGreeting(String greeting, String name) {  
+      
+          // Get the activity execution context  
+          ActivityExecutionContext context = Activity.getExecutionContext();  
+      
+          // Set a correlation token that can be used to complete the activity asynchronously  
+          byte[] taskToken = context.getTaskToken();  
+      
+          /**  
+           * For the example we will use a {@link java.util.concurrent.ForkJoinPool} to execute our  
+           * activity. In real-life applications this could be any service. The composeGreetingAsync  
+           * method is the one that will actually complete workflow action execution.  
+           */  
+          ForkJoinPool.commonPool().execute(() -> composeGreetingAsync(taskToken, greeting, name));  
+          context.doNotCompleteOnReturn();  
+      
+          // Since we have set doNotCompleteOnReturn(), the workflow action method return value is  
+          // ignored.  
+          return "ignored";  
+        }  
+      
+        // Method that will complete action execution using the defined ActivityCompletionClient  
+        private void composeGreetingAsync(byte[] taskToken, String greeting, String name) {  
+          String result = greeting + " " + name + "!";  
+      
+          // Complete our workflow activity using ActivityCompletionClient  
+          completionClient.complete(taskToken, result);  
+        }  
+      }  
+    
+
+Alternatively, set the [ ` doNotCompleteOnReturn() `
+](https://www.javadoc.io/doc/io.temporal/temporal-
+sdk/latest/io/temporal/activity/ActivityExecutionContext.html#doNotCompleteOnReturn\(\))
+method during an Activity Execution.
+
+    
+    
+        @Override  
+        public String composeGreeting(String greeting, String name) {  
+      
+          // Get the activity execution context  
+          ActivityExecutionContext context = Activity.getExecutionContext();  
+      
+          // Set a correlation token that can be used to complete the activity asynchronously  
+          byte[] taskToken = context.getTaskToken();  
+      
+          /**  
+           * For the example we will use a {@link java.util.concurrent.ForkJoinPool} to execute our  
+           * activity. In real-life applications this could be any service. The composeGreetingAsync  
+           * method is the one that will actually complete workflow action execution.  
+           */  
+          ForkJoinPool.commonPool().execute(() -> composeGreetingAsync(taskToken, greeting, name));  
+          context.doNotCompleteOnReturn();  
+      
+          // Since we have set doNotCompleteOnReturn(), the workflow action method return value is  
+          // ignored.  
+          return "ignored";  
+        }  
+    
+
+When this method is called during an Activity Execution, the Activity
+Execution does not complete when its method returns.
+
+##  How to start a Child Workflow Execution  ​
+
+A [ Child Workflow Execution ](/workflows#child-workflow) is a Workflow
+Execution that is scheduled from within another Workflow using a Child
+Workflow API.
+
+When using a Child Workflow API, Child Workflow related Events ( [
+StartChildWorkflowExecutionInitiated
+](/references/events#startchildworkflowexecutioninitiated) , [
+ChildWorkflowExecutionStarted
+](/references/events#childworkflowexecutionstarted) , [
+ChildWorkflowExecutionCompleted
+](/references/events#childworkflowexecutioncompleted) , etc...) are logged in
+the Workflow Execution Event History.
+
+Always block progress until the [ ChildWorkflowExecutionStarted
+](/references/events#childworkflowexecutionstarted) Event is logged to the
+Event History to ensure the Child Workflow Execution has started. After that,
+Child Workflow Executions may be abandoned using the default _Abandon_ [
+Parent Close Policy ](/workflows#parent-close-policy) set in the Child
+Workflow Options.
+
+To be sure that the Child Workflow Execution has started, first call the Child
+Workflow Execution method on the instance of Child Workflow future, which
+returns a different future.
+
+Then get the value of an object that acts as a proxy for a result that is
+initially unknown, which is what waits until the Child Workflow Execution has
+spawned.
+
+The first call to the Child Workflow stub must always be its Workflow method
+(method annotated with ` @WorkflowMethod ` ). Similar to Activities, invoking
+Child Workflow methods can be made synchronous or asynchronous by using `
+Async#function ` or ` Async#procedure ` . The synchronous call blocks until a
+Child Workflow method completes. The asynchronous call returns a ` Promise `
+which can be used to wait for the completion of the Child Workflow method, as
+in the following example:
+
+    
+    
+    GreetingChild child = Workflow.newChildWorkflowStub(GreetingChild.class);  
+    Promise<String> greeting = Async.function(child::composeGreeting, "Hello", name);  
+    // ...  
+    greeting.get()  
+    
+
+To execute an untyped Child Workflow asynchronously, call ` executeAsync ` on
+the ` ChildWorkflowStub ` , as shown in the following example.
+
+    
+    
+    //...  
+    ChildWorkflowStub childUntyped =  
+        Workflow.newUntypedChildWorkflowStub(  
+            "GreetingChild", // your workflow type  
+            ChildWorkflowOptions.newBuilder().setWorkflowId("childWorkflow").build());  
+      
+    Promise<String> greeting =  
+        childUntyped.executeAsync(String.class, String.class, "Hello", name);  
+    String result = greeting.get();  
+    //...  
+    
+
+The following examples show how to spawn a Child Workflow:
+
+  * Spawn a Child Workflow from a Workflow: 
+    
+        // Child Workflow interface  
+    @WorkflowInterface  
+    public interface GreetingChild {  
+    @WorkflowMethod  
+    String composeGreeting(String greeting, String name);  
+    }  
+    // Child Workflow implementation not shown  
+      
+    // Parent Workflow implementation  
+    public class GreetingWorkflowImpl implements GreetingWorkflow {  
+      
+    @Override  
+    public String getGreeting(String name) {  
+        GreetingChild child = Workflow.newChildWorkflowStub(GreetingChild.class);  
+      
+        // This is a blocking call that returns only after child has completed.  
+        return child.composeGreeting("Hello", name );  
+    }  
+    }  
+    
+
+  * Spawn two Child Workflows (with the same type) in parallel: 
+    
+        // Parent Workflow implementation  
+    public class GreetingWorkflowImpl implements GreetingWorkflow {  
+      
+        @Override  
+        public String getGreeting(String name) {  
+      
+            // Workflows are stateful, so a new stub must be created for each new child.  
+            GreetingChild child1 = Workflow.newChildWorkflowStub(GreetingChild.class);  
+            Promise<String> greeting1 = Async.function(child1::composeGreeting, "Hello", name);  
+      
+            // Both children will run concurrently.  
+            GreetingChild child2 = Workflow.newChildWorkflowStub(GreetingChild.class);  
+            Promise<String> greeting2 = Async.function(child2::composeGreeting, "Bye", name);  
+      
+            // Do something else here.  
+            ...  
+            return "First: " + greeting1.get() + ", second: " + greeting2.get();  
+        }  
+    }  
+    
+
+  * Send a Signal to a Child Workflow from the parent: 
+    
+        // Child Workflow interface  
+    @WorkflowInterface  
+    public interface GreetingChild {  
+        @WorkflowMethod  
+        String composeGreeting(String greeting, String name);  
+      
+        @SignalMethod  
+        void updateName(String name);  
+    }  
+      
+    // Parent Workflow implementation  
+    public class GreetingWorkflowImpl implements GreetingWorkflow {  
+      
+        @Override  
+        public String getGreeting(String name) {  
+            GreetingChild child = Workflow.newChildWorkflowStub(GreetingChild.class);  
+            Promise<String> greeting = Async.function(child::composeGreeting, "Hello", name);  
+            child.updateName("Temporal");  
+            return greeting.get();  
+        }  
+    }  
+    
+
+  * Sending a Query to Child Workflows from within the parent Workflow code is not supported. However, you can send a Query to Child Workflows from Activities using ` WorkflowClient ` . 
+
+Related reads:
+
+  * How to set Child Workflow Options in Java 
+
+  * [ How to develop a Workflow Definition ](/dev-guide/java/foundations#develop-workflows)
+
+  * Java Workflow reference: [ https://www.javadoc.io/doc/io.temporal/temporal-sdk/latest/io/temporal/workflow/package-summary.html ](https://www.javadoc.io/doc/io.temporal/temporal-sdk/latest/io/temporal/workflow/package-summary.html)
+
+####  How to set a Parent Close Policy  ​
+
+A [ Parent Close Policy ](/workflows#parent-close-policy) determines what
+happens to a Child Workflow Execution if its Parent changes to a Closed status
+(Completed, Failed, or Timed Out).
+
+The default Parent Close Policy option is set to terminate the Child Workflow
+Execution.
+
+Set [ Parent Close Policy ](/workflows#parent-close-policy) on an instance of
+` ChildWorkflowOptions ` using [ `
+ChildWorkflowOptions.newBuilder().setParentClosePolicy `
+](https://www.javadoc.io/doc/io.temporal/temporal-
+sdk/latest/io/temporal/workflow/ChildWorkflowOptions.Builder.html) .
+
+  * Type: ` ChildWorkflowOptions.Builder `
+  * Default: ` PARENT_CLOSE_POLICY_TERMINATE `
+
+    
+    
+     public void parentWorkflow() {  
+         ChildWorkflowOptions options =  
+            ChildWorkflowOptions.newBuilder()  
+                .setParentClosePolicy(ParentClosePolicy.PARENT_CLOSE_POLICY_ABANDON)  
+                .build();  
+         MyChildWorkflow child = Workflow.newChildWorkflowStub(MyChildWorkflow.class, options);  
+         Async.procedure(child::<workflowMethod>, <args>...);  
+         Promise<WorkflowExecution> childExecution = Workflow.getWorkflowExecution(child);  
+         // Wait for child to start  
+         childExecution.get()  
+    }  
+    
+
+In this example, we are:
+
+  1. Setting ` ChildWorkflowOptions.ParentClosePolicy ` to ` ABANDON ` when creating a Child Workflow stub. 
+  2. Starting Child Workflow Execution asynchronously using ` Async.function ` or ` Async.procedure ` . 
+  3. Calling ` Workflow.getWorkflowExecution(…) ` on the child stub. 
+  4. Waiting for the ` Promise ` returned by ` getWorkflowExecution ` to complete. This indicates whether the Child Workflow started successfully (or failed). 
+  5. Completing parent Workflow Execution asynchronously. 
+
+Steps 3 and 4 are needed to ensure that a Child Workflow Execution starts
+before the parent closes. If the parent initiates a Child Workflow Execution
+and then completes immediately after, the Child Workflow will never execute.
+
+##  How to Continue-As-New  ​
+
+[ Continue-As-New ](/workflows#continue-as-new) enables a Workflow Execution
+to close successfully and create a new Workflow Execution in a single atomic
+operation if the number of Events in the Event History is becoming too large.
+The Workflow Execution spawned from the use of Continue-As-New has the same
+Workflow Id, a new Run Id, and a fresh Event History and is passed all the
+appropriate parameters.
+
+Temporal SDK allows you to use [ Continue-As-New ](/workflows#continue-as-new)
+in various ways.
+
+To continue execution of the same Workflow that is currently running, use:
+
+    
+    
+    Workflow.continueAsNew(input1, ...);  
+    
+
+To continue execution of a currently running Workflow as a completely
+different Workflow Type, use ` Workflow.newContinueAsNewStub() ` . For
+example, in a Workflow class called ` YourWorkflow ` , we can create a
+Workflow stub with a different type, and call its Workflow method to continue
+execution as that type:
+
+    
+    
+    MyOtherWorkflow continueAsNew = Workflow.newContinueAsNewStub(MyOtherWorkflow.class);  
+    coninueAsNew.greet(input);  
+    
+
+To provide ` ContinueAsNewOptions ` options in `
+Workflow.newContinueAsNewStub() ` use:
+
+    
+    
+    ContinueAsNewOptions options = ContinueAsNewOptions.newBuilder()  
+            .setTaskQueue("newTaskQueueName")  
+            .build();  
+      
+    MyOtherWorkflow continueAsNew = Workflow.newContinueAsNewStub(MyOtherWorkflow.class, options);  
+    // ...  
+    continueAsNew.greet(input);  
+    
+
+Providing these options allows you to continue Workflow Execution as a new
+Workflow run, with a different Workflow Type, and on a different Task Queue.
+
+Java Workflow reference: [ https://www.javadoc.io/doc/io.temporal/temporal-
+sdk/latest/io/temporal/workflow/package-summary.html
+](https://www.javadoc.io/doc/io.temporal/temporal-
+sdk/latest/io/temporal/workflow/package-summary.html)
+
+##  What is a Timer?  ​
+
+A Workflow can set a durable timer for a fixed time period. In some SDKs, the
+function is called ` sleep() ` , and in others, it's called ` timer() ` .
+
+A Workflow can sleep for months. Timers are persisted, so even if your Worker
+or Temporal Cluster is down when the time period completes, as soon as your
+Worker and Cluster are back up, the ` Workflow.sleep() ` call resolves and
+your code continues executing.
+
+Sleeping is a resource-light operation: it does not tie up the process, and
+you can run millions of Timers off a single Worker.
+
+To set a Timer in Java, use [ ` sleep() `
+](https://www.javadoc.io/doc/io.temporal/temporal-
+sdk/latest/io/temporal/workflow/Workflow.html#sleep) and pass the number of
+seconds you want to wait before continuing.
+
+    
+    
+    sleep(5);  
+    
+
+##  How to set a Cron Schedule in Java  ​
+
+A [ Temporal Cron Job ](/workflows#temporal-cron-job) is the series of
+Workflow Executions that occur when a Cron Schedule is provided in the call to
+spawn a Workflow Execution.
+
+A Cron Schedule is provided as an option when the call to spawn a Workflow
+Execution is made.
+
+Set the Cron Schedule with the [ ` WorkflowStub `
+](https://www.javadoc.io/doc/io.temporal/temporal-
+sdk/latest/io/temporal/client/WorkflowStub.html) instance in the Client code
+using [ ` WorkflowOptions.Builder.setCronSchedule `
+](https://www.javadoc.io/doc/io.temporal/temporal-
+sdk/latest/io/temporal/client/WorkflowOptions.Builder.html) .
+
+Setting ` setCronSchedule ` changes the Workflow Execution into a Temporal
+Cron Job. The default timezone for a Cron is UTC.
+
+  * Type: ` String `
+  * Default: None 
+
+    
+    
+    //create Workflow stub for YourWorkflowInterface  
+    YourWorkflowInterface workflow1 =  
+        YourWorker.yourclient.newWorkflowStub(  
+            YourWorkflowInterface.class,  
+            WorkflowOptions.newBuilder()  
+                    .setWorkflowId("YourWF")  
+                    .setTaskQueue(YourWorker.TASK_QUEUE)  
+                    // Set Cron Schedule  
+                    .setCronSchedule("* * * * *")  
+                    .build());  
+    
+
+For more details, see the [ Cron Sample
+](https://github.com/temporalio/samples-
+java/blob/main/src/main/java/io/temporal/samples/hello/HelloCron.java)
+
+##  Side Effects  ​
+
+Side Effects are used to execute non-deterministic code, such as generating a
+UUID or a random number, without compromising deterministic in the Workflow.
+This is done by storing the non-deterministic results of the Side Effect into
+the Workflow [ Event History ](/workflows/#event-history) .
+
+A Side Effect does not re-execute during a Replay. Instead, it returns the
+recorded result from the Workflow Execution Event History.
+
+Side Effects should not fail. An exception that is thrown from the Side Effect
+causes failure and retry of the current Workflow Task.
+
+An Activity or a Local Activity may also be used instead of a Side effect, as
+its result is also persisted in Workflow Execution History.
+
+note
+
+You shouldn’t modify the Workflow state inside a Side Effect function, because
+it is not reexecuted during Replay. Side Effect function should be used to
+return a value.
+
+To use a Side Effect in Java, set the [ ` sideEffect() `
+](https://www.javadoc.io/doc/io.temporal/temporal-
+sdk/latest/io/temporal/workflow/Workflow.html#sideEffect\(java.lang.Class,io.temporal.workflow.Functions.Func\))
+function in your Workflow Execution and return the non-deterministic code.
+
+    
+    
+    int random = Workflow.sideEffect(Integer.class, () -> random.nextInt(100));  
+    if random < 50 {  
+           ....  
+    } else {  
+           ....  
+    }  
+    
+
+Here's another example that uses ` sideEffect() ` .
+
+    
+    
+    // implementation of the @WorkflowMethod  
+    public void execute() {  
+        int randomInt = Workflow.sideEffect( int.class, () -> {  
+            Random random = new SecureRandom();  
+            return random.nextInt();  
+        });  
+      
+        String userHome = Workflow.sideEffect(String.class, () -> System.getenv("USER_HOME"));  
+      
+        if(randomInt % 2 == 0) {  
+            // ...  
+        } else {  
+            // ...  
+        }  
+    }  
+    
+
+Java also provides a deterministic method to generate random numbers or random
+UUIDs.
+
+To generate random numbers in a deterministic method, use [ ` newRandom() `
+](https://www.javadoc.io/static/io.temporal/temporal-
+sdk/latest/io/temporal/workflow/Workflow.html#newRandom\(\))
+
+    
+    
+    // implementation of the @WorkflowMethod  
+    public void execute() {  
+        int randomInt = Workflow.newRandom().nextInt();  
+        // ...  
+    }  
+    
+
+To generate a random UUID in a deterministic method, use [ ` randomUUID() `
+](https://www.javadoc.io/static/io.temporal/temporal-
+sdk/latest/io/temporal/workflow/Workflow.html#newRandom\(\)) .
+
+    
+    
+    // implementation of the @WorkflowMethod  
+    public void execute() {  
+        String randomUUID = Workflow.randomUUID().toString();  
+        // ...  
+    }  
+    
+
+##  How to create and manage Namespaces  ​
+
+You can create, update, deprecate or delete your [ Namespaces ](/namespaces)
+using either tctl or SDK APIs.
+
+Use Namespaces to isolate your Workflow Executions according to your needs.
+For example, you can use Namespaces to match the development lifecycle by
+having separate ` dev ` and ` prod ` Namespaces. You could also use them to
+ensure Workflow Executions between different teams never communicate - such as
+ensuring that the ` teamA ` Namespace never impacts the ` teamB ` Namespace.
+
+On Temporal Cloud, use the [ Temporal Cloud UI ](/cloud/namespaces#create-a-
+namespace) to create and manage a Namespace from the UI, or [ tcld commands
+](https://docs.temporal.io/cloud/tcld/namespace/) to manage Namespaces from
+the command-line interface.
+
+On self-hosted Temporal Cluster, you can register and manage your Namespaces
+using tctl (recommended) or programmatically using APIs. Note that these APIs
+and tctl commands will not work with Temporal Cloud.
+
+Use a custom [ Authorizer ](/security#authorizer-plugin) on your Frontend
+Service in the Temporal Cluster to set restrictions on who can create, update,
+or deprecate Namespaces.
+
+You must register a Namespace with the Temporal Cluster before setting it in
+the Temporal Client.
+
+###  How to register Namespaces  ​
+
+Registering a Namespace creates a Namespace on the Temporal Cluster or
+Temporal Cloud.
+
+On Temporal Cloud, use the [ Temporal Cloud UI ](/cloud/namespaces#create-a-
+namespace) or [ tcld commands
+](https://docs.temporal.io/cloud/tcld/namespace/) to create Namespaces.
+
+On self-hosted Temporal Cluster, you can register your Namespaces using tctl
+(recommended) or programmatically using APIs. Note that these APIs and tctl
+commands will not work with Temporal Cloud.
+
+Use a custom [ Authorizer ](/security#authorizer-plugin) on your Frontend
+Service in the Temporal Cluster to set restrictions on who can create, update,
+or deprecate Namespaces.
+
+Use the [ ` RegisterNamespace ` API
+](https://github.com/temporalio/api/blob/f0350f8032ad2f0c60c539b3b61ea37f412f1cf7/temporal/api/workflowservice/v1/service.proto)
+to register a [ Namespace ](/namespaces) and set the [ Retention Period
+](/clusters#retention-period) for the Workflow Execution Event History for the
+Namespace.
+
+    
+    
+    //...  
+    import com.google.protobuf.util.Durations;  
+    import io.temporal.api.workflowservice.v1.RegisterNamespaceRequest;  
+    //...  
+    public static void createNamespace(String name) {  
+        RegisterNamespaceRequest req = RegisterNamespaceRequest.newBuilder()  
+                .setNamespace("your-custom-namespace")  
+                .setWorkflowExecutionRetentionPeriod(Durations.fromDays(3)) // keeps the Workflow Execution  
+                //Event History for up to 3 days in the Persistence store. Not setting this value will throw an error.  
+                .build();  
+        service.blockingStub().registerNamespace(req);  
+    }  
+    //...  
+    
+
+The Retention Period setting using ` WorkflowExecutionRetentionPeriod ` is
+mandatory. The minimum value you can set for this period is 1 day.
+
+Once registered, set Namespace using ` WorkflowClientOptions ` within a
+Workflow Client to run your Workflow Executions within that Namespace. See [
+how to set Namespace in a Client in Java ](/dev-
+guide/java/foundations#connect-to-a-dev-cluster) for details.
+
+Note that Namespace registration using this API takes up to 10 seconds to
+complete. Ensure that you wait for this registration to complete before
+starting the Workflow Execution against the Namespace.
+
+To update your Namespace, use the [ ` UpdateNamespace ` API ](/dev-
+guide/java/features/#namespaces) with the ` NamespaceClient ` .
+
+###  How to manage Namespaces  ​
+
+You can get details for your Namespaces, update Namespace configuration, and
+deprecate or delete your Namespaces.
+
+On Temporal Cloud, use the [ Temporal Cloud UI ](/cloud/namespaces#create-a-
+namespace) or [ tcld commands
+](https://docs.temporal.io/cloud/tcld/namespace/) to manage Namespaces.
+
+On self-hosted Temporal Cluster, you can manage your registered Namespaces
+using tctl (recommended) or programmatically using APIs. Note that these APIs
+and tctl commands will not work with Temporal Cloud.
+
+Use a custom [ Authorizer ](/security#authorizer-plugin) on your Frontend
+Service in the Temporal Cluster to set restrictions on who can create, update,
+or deprecate Namespaces.
+
+You must register a Namespace with the Temporal Cluster before setting it in
+the Temporal Client.
+
+On Temporal Cloud, use the [ Temporal Cloud UI ](/cloud/namespaces) or [ tcld
+commands ](https://docs.temporal.io/cloud/tcld/namespace/) to manage
+Namespaces.
+
+On self-hosted Temporal Cluster, you can manage your registered Namespaces
+using tctl (recommended) or programmatically using APIs. Note that these APIs
+and tctl commands will not work with Temporal Cloud.
+
+  * Update information and configuration for a registered Namespace on your Temporal Cluster: 
+
+    * With tctl: [ ` tctl namespace update ` ](/tctl-v1/namespace#update) Example 
+    * Use the [ ` UpdateNamespace ` API ](https://github.com/temporalio/api/blob/e5cf521c6fdc71c69353f3d2ac5506dd6e827af8/temporal/api/workflowservice/v1/service.proto) to update configuration on a Namespace. Example 
+    
+        import io.temporal.api.workflowservice.v1.*;  
+    //...  
+    UpdateNamespaceRequest updateNamespaceRequest = UpdateNamespaceRequest.newBuilder()  
+                .setNamespace("your-namespace-name") //the namespace that you want to update  
+                .setUpdateInfo(UpdateNamespaceInfo.newBuilder() //has options to update namespace info  
+                        .setDescription("your updated namespace description") //updates description in the namespace info.  
+                        .build())  
+                .setConfig(NamespaceConfig.newBuilder() //has options to update namespace configuration  
+                        .setWorkflowExecutionRetentionTtl(Durations.fromHours(30)) //updates the retention period for the namespace "your-namespace--name" to 30 hrs.  
+                        .build())  
+                .build();  
+        UpdateNamespaceResponse updateNamespaceResponse = namespaceservice.blockingStub().updateNamespace(updateNamespaceRequest);  
+    //...  
+    
+
+  * Get details for a registered Namespace on your Temporal Cluster: 
+
+    * With tctl: [ ` tctl namespace describe ` ](/tctl-v1/namespace#describe)
+    * Use the [ ` DescribeNamespace ` API ](https://github.com/temporalio/api/blob/e5cf521c6fdc71c69353f3d2ac5506dd6e827af8/temporal/api/workflowservice/v1/service.proto) to return information and configuration details for a registered Namespace. Example 
+    
+        import io.temporal.api.workflowservice.v1.*;  
+    //...  
+    DescribeNamespaceRequest descNamespace = DescribeNamespaceRequest.newBuilder()  
+                .setNamespace("your-namespace-name") //specify the namespace you want details for  
+                .build();  
+        DescribeNamespaceResponse describeNamespaceResponse = namespaceservice.blockingStub().describeNamespace(descNamespace);  
+        System.out.println("Namespace Description: " + describeNamespaceResponse);  
+    //...  
+    
+
+  * Get details for all registered Namespaces on your Temporal Cluster: 
+
+    * With tctl: [ ` tctl namespace list ` ](/tctl-v1/namespace#list)
+    * Use the [ ` ListNamespace ` API ](https://github.com/temporalio/api/blob/e5cf521c6fdc71c69353f3d2ac5506dd6e827af8/temporal/api/workflowservice/v1/service.proto) to return information and configuration details for all registered Namespaces on your Temporal Cluster. Example 
+    
+        import io.temporal.api.workflowservice.v1.*;  
+    //...  
+    ListNamespacesRequest listNamespaces = ListNamespacesRequest.newBuilder().build();  
+        ListNamespacesResponse listNamespacesResponse = namespaceservice.blockingStub().listNamespaces(listNamespaces); //lists 1-100 namespaces (1 page) in the active cluster. To list all, set the page size or loop until NextPageToken is nil.  
+    //...  
+    
+
+  * Deprecate a Namespace: The [ ` DeprecateNamespace ` API ](https://github.com/temporalio/api/blob/e5cf521c6fdc71c69353f3d2ac5506dd6e827af8/temporal/api/workflowservice/v1/service.proto) updates the state of a registered Namespace to "DEPRECATED". Once a Namespace is deprecated, you cannot start new Workflow Executions on it. All existing and running Workflow Executions on a deprecated Namespace will continue to run. Example: 
+    
+        import io.temporal.api.workflowservice.v1.*;  
+    //...  
+    DeprecateNamespaceRequest deprecateNamespace = DeprecateNamespaceRequest.newBuilder()  
+                .setNamespace("your-namespace-name") //specify the namespace that you want to deprecate  
+                .build();  
+        DeprecateNamespaceResponse response = namespaceservice.blockingStub().deprecateNamespace(deprecateNamespace);  
+    //...  
+    
+
+  * Delete a Namespace: The [ ` DeleteNamespace ` API ](https://github.com/temporalio/api/blob/e5cf521c6fdc71c69353f3d2ac5506dd6e827af8/temporal/api/workflowservice/v1/service.proto) deletes a Namespace. Deleting a Namespace deletes all running and completed Workflow Executions on the Namespace, and removes them from the persistence store and the visibility store. 
+
+Example:
+
+    
+        //...  
+    DeleteNamespaceResponse res =  
+    OperatorServiceStubs.newServiceStubs(OperatorServiceStubsOptions.newBuilder()  
+            .setChannel(service.getRawChannel())  
+            .validateAndBuildWithDefaults())  
+        .blockingStub()  
+        .deleteNamespace(DeleteNamespaceRequest.newBuilder().setNamespace("your-namespace-name").build());  
+    //...  
+    
+
+##  How to use custom payload conversion  ​
+
+Temporal SDKs provide a [ Payload Converter ](/dataconversion#payload-
+converter) that can be customized to convert a custom data type to [ Payload
+](/dataconversion#payload) and back.
+
+Implementing custom Payload conversion is optional. It is needed only if the [
+default Data Converter ](/dataconversion#default-data-converter) does not
+support your custom values.
+
+To support custom Payload conversion, create a [ custom Payload Converter
+](/dataconversion#custom-payload-conversion) and configure the Data Converter
+to use it in your Client options.
+
+The order in which your encoding Payload Converters are applied depend on the
+order given to the Data Converter. You can set multiple encoding Payload
+Converters to run your conversions. When the Data Converter receives a value
+for conversion, it passes through each Payload Converter in sequence until the
+converter that handles the data type does the conversion.
+
+Create a custom implementation of a [ PayloadConverter
+](https://www.javadoc.io/doc/io.temporal/temporal-
+sdk/latest/io/temporal/common/converter/PayloadConverter.html) interface and
+use the ` withPayloadConverterOverrides ` method to implement the custom
+object conversion with ` DefaultDataConverter ` .
+
+` PayloadConverter ` serializes and deserializes method parameters that need
+to be sent over the wire. You can create a custom implementation of `
+PayloadConverter ` for custom formats, as shown in the following example:
+
+    
+    
+    /** Payload Converter specific to your custom object */  
+    public class YourCustomPayloadConverter implements PayloadConverter {  
+     //...  
+      @Override  
+      public String getEncodingType() {  
+        return "json/plain"; // The encoding type determines which default conversion behavior to override.  
+      }  
+      
+      @Override  
+      public Optional<Payload> toData(Object value) throws DataConverterException {  
+          // Add your convert-to logic here.  
+      }  
+      
+      @Override  
+      public <T> T fromData(Payload content, Class<T> valueClass, Type valueType)  
+          throws DataConverterException {  
+        // Add your convert-from logic here.  
+      }  
+    //...  
+    }  
+    
+
+You can also use [ specific implementation classes
+](https://www.javadoc.io/static/io.temporal/temporal-
+sdk/1.18.1/io/temporal/common/converter/package-summary.html) provided in the
+Java SDK.
+
+For example, to create a custom ` JacksonJsonPayloadConverter ` , use the
+following:
+
+    
+    
+    //...  
+    private static JacksonJsonPayloadConverter yourCustomJacksonJsonPayloadConverter() {  
+      ObjectMapper objectMapper = new ObjectMapper();  
+      // Add your custom logic here.  
+      return new JacksonJsonPayloadConverter(objectMapper);  
+    }  
+    //...  
+    
+
+To set your custom Payload Converter, use it with [
+withPayloadConverterOverrides
+](https://www.javadoc.io/doc/io.temporal/temporal-
+sdk/latest/io/temporal/common/converter/DefaultDataConverter.html#withPayloadConverterOverrides\(io.temporal.common.converter.PayloadConverter...\))
+with a new instance of ` DefaultDataConverter ` in your ` WorkflowClient `
+options that you use in your Worker process and to start your Workflow
+Executions.
+
+The following example shows how to set a custom ` YourCustomPayloadConverter `
+Payload Converter.
+
+    
+    
+    //...  
+    DefaultDataConverter ddc =  
+            DefaultDataConverter.newDefaultInstance()  
+                .withPayloadConverterOverrides(new YourCustomPayloadConverter());  
+      
+        WorkflowClientOptions workflowClientOptions =  
+            WorkflowClientOptions.newBuilder().setDataConverter(ddc).build();  
+    //...  
+    
+
