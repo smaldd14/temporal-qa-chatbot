@@ -31,14 +31,15 @@ llm = ChatOpenAI(model_name="gpt-3.5-turbo", temperature=0)
 
 
 # 2. Sidebar username input
-st.sidebar.title("`Temporal Java Docs`")
-st.session_state["user_name"] = st.sidebar.text_input(
-    "GitHub Username:",
-    key="github_user_input",
-    placeholder="input GitHub username",
-    value=st.session_state["user_name"],
-    on_change=handling_user_change,
-)
+# This could be used for connecting with a GitHub repo
+# st.sidebar.title("`Temporal Java Docs`")
+# st.session_state["user_name"] = st.sidebar.text_input(
+#     "GitHub Username:",
+#     key="github_user_input",
+#     placeholder="input GitHub username",
+#     value=st.session_state["user_name"],
+#     on_change=handling_user_change,
+# )
 
 # Main screen chat
 st.header("`Chat with Temporal Java Docs`")
